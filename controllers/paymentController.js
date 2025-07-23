@@ -235,7 +235,7 @@ exports.verifyPhonePePayment = async (req, res) => {
   }
 };
 
-// PayPal Payment Initiation - FIXED variable name
+// PayPal Payment Initiation
 exports.initiatePayPalPayment = async (req, res) => {
   try {
     const { amount, customerName, customerEmail, customerPhone, ecommPlan, hostingPlan } = req.body;
@@ -247,7 +247,11 @@ exports.initiatePayPalPayment = async (req, res) => {
       });
     }
 
-    // Get PayPal access token - FIXED variable name to match .env
+    // Ensure we have a valid frontend URL
+    const frontendURL = process.env.FRONTEND_URL || 'https://craftmystore.com';
+    console.log('Using frontend URL for PayPal:', frontendURL);
+
+    // Get PayPal access token
     const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64');
     
     console.log('PayPal Auth:', `${process.env.PAYPAL_CLIENT_ID}:***`);
@@ -266,7 +270,7 @@ exports.initiatePayPalPayment = async (req, res) => {
     const accessToken = tokenResponse.data.access_token;
     console.log('PayPal Access Token Obtained');
 
-    // Create order
+    // Create order with explicit redirect URLs
     const orderResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v2/checkout/orders`, {
       intent: 'CAPTURE',
       purchase_units: [{
@@ -277,8 +281,8 @@ exports.initiatePayPalPayment = async (req, res) => {
         description: `CraftMyStore Plan: ${ecommPlan || hostingPlan || 'Custom'}`
       }],
       application_context: {
-        return_url: `${process.env.FRONTEND_URL}/payment-success?method=paypal&amount=${amount}&customer=${encodeURIComponent(customerName || customerEmail)}`,
-        cancel_url: `${process.env.FRONTEND_URL}/payment-cancel`,
+        return_url: `${frontendURL}/payment-success?method=paypal&amount=${amount}&customer=${encodeURIComponent(customerName || customerEmail)}`,
+        cancel_url: `${frontendURL}/payment-cancel`,
         brand_name: 'CraftMyStore',
         landing_page: 'LOGIN',
         user_action: 'PAY_NOW'
@@ -291,7 +295,10 @@ exports.initiatePayPalPayment = async (req, res) => {
     });
 
     console.log('PayPal Order Created:', orderResponse.data.id);
+    console.log('PayPal Links:', JSON.stringify(orderResponse.data.links));
+    
     const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
+    console.log('PayPal Approval URL:', approvalUrl);
 
     res.json({
       success: true,

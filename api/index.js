@@ -28,7 +28,7 @@ app.use((req, res, next) => {
 });
 
 // Routes
-app.use('/api/payment', paymentRoutes);
+app.use('/', paymentRoutes);
 
 app.get('/', (req, res) => {
   res.json({

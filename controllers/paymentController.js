@@ -149,7 +149,7 @@ exports.phonePeCallback = async (req, res) => {
   }
 };
 
-// Verify PhonePe Payment using SDK - IMPROVED to correctly handle cancelled payments
+// Verify PhonePe Payment using SDK - FIXED VERSION
 exports.verifyPhonePePayment = async (req, res) => {
   try {
     const { merchantTransactionId } = req.params;
@@ -167,7 +167,12 @@ exports.verifyPhonePePayment = async (req, res) => {
     if (!global.pendingPayments || !global.pendingPayments[merchantTransactionId]) {
       return res.status(404).json({
         success: false,
-        message: 'Transaction not found'
+        message: 'Transaction not found',
+        data: {
+          isPaymentSuccessful: false,
+          responseCode: 'FAILED',
+          code: 'PAYMENT_ERROR'
+        }
       });
     }
 
@@ -178,7 +183,11 @@ exports.verifyPhonePePayment = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'PhonePe order ID not found for this transaction',
-        status: 'PAYMENT_ERROR'
+        data: {
+          isPaymentSuccessful: false,
+          responseCode: 'FAILED',
+          code: 'PAYMENT_ERROR'
+        }
       });
     }
 
@@ -197,25 +206,60 @@ exports.verifyPhonePePayment = async (req, res) => {
     const statusResponse = await client.checkStatus(phonepeOrderId);
     console.log('PhonePe Status Response:', statusResponse);
 
-    // Update payment status
+    // Update payment status in memory
     global.pendingPayments[merchantTransactionId].status = statusResponse.state;
     global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
     global.pendingPayments[merchantTransactionId].paymentDetails = statusResponse;
 
-    // Check for specific success conditions
-    const isSuccess =
-      statusResponse &&
-      (statusResponse.code === 'PAYMENT_SUCCESS' ||
-        statusResponse.state === 'COMPLETED' ||
-        statusResponse.state === 'SUCCESS');
+    // Determine payment success based on PhonePe response
+    let isSuccess = false;
+    let responseCode = 'FAILED';
+    let paymentCode = 'PAYMENT_ERROR';
 
+    if (statusResponse) {
+      // Check for success conditions
+      if (statusResponse.code === 'PAYMENT_SUCCESS' || 
+          statusResponse.state === 'COMPLETED' ||
+          (statusResponse.responseCode && statusResponse.responseCode === 'SUCCESS')) {
+        isSuccess = true;
+        responseCode = 'SUCCESS';
+        paymentCode = 'PAYMENT_SUCCESS';
+      }
+      // Check for explicit failure conditions
+      else if (statusResponse.code === 'PAYMENT_ERROR' ||
+               statusResponse.code === 'PAYMENT_FAILED' ||
+               statusResponse.state === 'FAILED' ||
+               (statusResponse.responseCode && statusResponse.responseCode === 'FAILED')) {
+        isSuccess = false;
+        responseCode = 'FAILED';
+        paymentCode = 'PAYMENT_ERROR';
+      }
+      // If state is still PENDING, return current status
+      else if (statusResponse.state === 'PENDING' || statusResponse.state === 'INITIATED') {
+        // Payment is still processing
+        return res.json({
+          success: true,
+          data: {
+            ...statusResponse,
+            isPaymentSuccessful: null, // Indicates processing
+            responseCode: 'PENDING',
+            code: 'PAYMENT_PENDING',
+            message: 'Payment is still being processed'
+          }
+        });
+      }
+    }
+
+    // Return final status
     return res.json({
       success: true,
       data: {
         ...statusResponse,
         isPaymentSuccessful: isSuccess,
-        responseCode: isSuccess ? 'SUCCESS' : 'FAILED',
-        code: isSuccess ? 'PAYMENT_SUCCESS' : 'PAYMENT_ERROR'
+        responseCode: responseCode,
+        code: paymentCode,
+        merchantTransactionId: merchantTransactionId,
+        amount: paymentInfo.amount
       }
     });
 
@@ -225,7 +269,6 @@ exports.verifyPhonePePayment = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Verification failed: ' + error.message,
-      error: error,
       data: {
         isPaymentSuccessful: false,
         responseCode: 'FAILED',

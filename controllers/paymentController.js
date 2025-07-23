@@ -1,15 +1,12 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
-// Store pending payments in memory (use database in production)
-global.pendingPayments = global.pendingPayments || {};
-
-// PhonePe Payment Initiation
+// PhonePe Payment Initiation - Production Only
 exports.initiatePhonePePayment = async (req, res) => {
   try {
-    console.log('PhonePe Payment Initiation Request:', req.body);
-    
     const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
+    
+    console.log('PhonePe Payment Request:', req.body);
     
     // Validation
     if (!amount || !customerPhone || !customerEmail || !customerName) {
@@ -51,6 +48,8 @@ exports.initiatePhonePePayment = async (req, res) => {
       createdAt: new Date().toISOString()
     };
     
+    // Store in global object (in production, use database)
+    global.pendingPayments = global.pendingPayments || {};
     global.pendingPayments[merchantTransactionId] = paymentInfo;
 
     // PhonePe API payload
@@ -74,7 +73,7 @@ exports.initiatePhonePePayment = async (req, res) => {
     const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     console.log('Base64 Payload:', payloadBase64);
     
-    // Create checksum
+    // Create checksum using the correct base URL
     const apiEndpoint = "/pg/v1/pay";
     const checksumString = payloadBase64 + apiEndpoint + process.env.PHONEPE_MERCHANT_KEY;
     const sha256Hash = crypto.createHash('sha256').update(checksumString).digest('hex');
@@ -82,9 +81,9 @@ exports.initiatePhonePePayment = async (req, res) => {
     
     console.log('X-VERIFY Header:', xVerifyHeader);
     
-    // Make API call to PhonePe
+    // Make API call to PhonePe with correct base URL
     const apiUrl = `${process.env.PHONEPE_BASE_URL}/pg/v1/pay`;
-    console.log('PhonePe API URL:', apiUrl);
+    console.log('API URL:', apiUrl);
     
     const response = await axios.post(
       apiUrl,
@@ -95,16 +94,17 @@ exports.initiatePhonePePayment = async (req, res) => {
           'X-VERIFY': xVerifyHeader,
           'accept': 'application/json'
         },
-        timeout: 30000
+        timeout: 30000 // 30 second timeout
       }
     );
     
     console.log('PhonePe API Response:', JSON.stringify(response.data, null, 2));
     
+    // Check response
     if (response.data && response.data.success === true) {
       const redirectUrl = response.data.data.instrumentResponse.redirectInfo.url;
       
-      // Update payment info
+      // Update payment info with redirect URL
       global.pendingPayments[merchantTransactionId].redirectUrl = redirectUrl;
       global.pendingPayments[merchantTransactionId].status = 'INITIATED';
       
@@ -126,9 +126,11 @@ exports.initiatePhonePePayment = async (req, res) => {
   } catch (error) {
     console.error('PhonePe Payment Error:', error);
     
+    // Detailed error logging
     if (error.response) {
       console.error('Error Response Status:', error.response.status);
       console.error('Error Response Data:', error.response.data);
+      console.error('Error Response Headers:', error.response.headers);
       
       return res.status(error.response.status || 500).json({
         success: false,
@@ -136,12 +138,14 @@ exports.initiatePhonePePayment = async (req, res) => {
         error: error.response.data
       });
     } else if (error.request) {
+      console.error('Error Request:', error.request);
       return res.status(500).json({
         success: false,
         message: 'No response from PhonePe API',
         error: 'Network error'
       });
     } else {
+      console.error('Error Message:', error.message);
       return res.status(500).json({
         success: false,
         message: error.message || 'Payment initiation failed',
@@ -154,15 +158,11 @@ exports.initiatePhonePePayment = async (req, res) => {
 // PhonePe Callback Handler
 exports.phonePeCallback = async (req, res) => {
   try {
-    console.log('PhonePe Callback received:', {
-      body: req.body,
-      query: req.query,
-      headers: req.headers
-    });
+    console.log('PhonePe Callback received:', req.body, req.query);
     
     const { merchantTransactionId, status } = req.query;
     
-    if (merchantTransactionId && global.pendingPayments[merchantTransactionId]) {
+    if (merchantTransactionId && global.pendingPayments && global.pendingPayments[merchantTransactionId]) {
       global.pendingPayments[merchantTransactionId].status = status || 'COMPLETED';
       global.pendingPayments[merchantTransactionId].updatedAt = new Date().toISOString();
       console.log('Updated payment status for:', merchantTransactionId, 'to:', status);
@@ -175,7 +175,7 @@ exports.phonePeCallback = async (req, res) => {
   }
 };
 
-// Verify PhonePe Payment
+// Verify PhonePe Payment - Production Only
 exports.verifyPhonePePayment = async (req, res) => {
   try {
     const { merchantTransactionId } = req.params;
@@ -197,7 +197,9 @@ exports.verifyPhonePePayment = async (req, res) => {
     
     const statusUrl = `${process.env.PHONEPE_BASE_URL}${statusEndpoint}`;
     console.log('Verification URL:', statusUrl);
+    console.log('X-VERIFY Header:', xVerifyHeader);
     
+    // Make verification API call
     const response = await axios.get(statusUrl, {
       headers: {
         'Content-Type': 'application/json',
@@ -212,7 +214,7 @@ exports.verifyPhonePePayment = async (req, res) => {
     
     if (response.data && response.data.success) {
       // Update local payment status
-      if (global.pendingPayments[merchantTransactionId]) {
+      if (global.pendingPayments && global.pendingPayments[merchantTransactionId]) {
         global.pendingPayments[merchantTransactionId].status = response.data.data.state;
         global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
       }
@@ -222,6 +224,7 @@ exports.verifyPhonePePayment = async (req, res) => {
         data: response.data.data
       });
     } else {
+      console.error('PhonePe Verification Failed:', response.data);
       return res.status(400).json({
         success: false,
         message: response.data?.message || 'Payment verification failed',
@@ -233,6 +236,7 @@ exports.verifyPhonePePayment = async (req, res) => {
     console.error('PhonePe Verification Error:', error);
     
     if (error.response) {
+      console.error('Verification Error Response:', error.response.data);
       return res.status(error.response.status || 500).json({
         success: false,
         message: error.response.data?.message || 'Verification API error',
@@ -251,118 +255,121 @@ exports.verifyPhonePePayment = async (req, res) => {
 // PayPal Payment Initiation
 exports.initiatePayPalPayment = async (req, res) => {
   try {
-    const { amount, customerName, customerEmail, customerPhone, ecommPlan, hostingPlan } = req.body;
-
-    if (!amount || !customerEmail) {
+    const { amount, ecommPlan, hostingPlan, customerName, customerEmail } = req.body;
+    
+    if (!amount || !customerEmail || !customerName) {
       return res.status(400).json({
         success: false,
-        message: 'Amount and customer email are required'
+        message: 'Missing required fields'
       });
     }
-
-    // Get PayPal access token
-    const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
     
-    const tokenResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`, 
+    // Get PayPal access token
+    const tokenResponse = await axios.post(
+      `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`,
       'grant_type=client_credentials',
       {
         headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64')}`
         }
       }
     );
-
+    
     const accessToken = tokenResponse.data.access_token;
-
-    // Create order
-    const orderResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v2/checkout/orders`, {
+    
+    // Create PayPal order
+    const orderData = {
       intent: 'CAPTURE',
       purchase_units: [{
         amount: {
           currency_code: 'USD',
           value: amount.toString()
         },
-        description: `CraftMyStore Plan: ${ecommPlan || hostingPlan || 'Custom'}`
+        description: `CraftMyStore - ${ecommPlan} + ${hostingPlan}`
       }],
       application_context: {
-        return_url: `${process.env.FRONTEND_URL}/payment-success?method=paypal&amount=${amount}&customer=${encodeURIComponent(customerName || customerEmail)}`,
-        cancel_url: `${process.env.FRONTEND_URL}/payment-cancel`,
-        brand_name: 'CraftMyStore',
-        landing_page: 'LOGIN',
-        user_action: 'PAY_NOW'
+        return_url: `${process.env.FRONTEND_URL}/payment-success`,
+        cancel_url: `${process.env.FRONTEND_URL}/payment-cancel`
       }
-    }, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
+    };
+    
+    const orderResponse = await axios.post(
+      `${process.env.PAYPAL_BASE_URL}/v2/checkout/orders`,
+      orderData,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        }
       }
-    });
-
+    );
+    
     const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
-
+    
     res.json({
       success: true,
       orderId: orderResponse.data.id,
-      approvalUrl: approvalUrl
+      redirectUrl: approvalUrl
     });
-
+    
   } catch (error) {
-    console.error('PayPal Error:', error.response?.data || error.message);
+    console.error('PayPal Error:', error);
     res.status(500).json({
       success: false,
-      message: 'PayPal payment initiation failed',
-      error: error.response?.data || error.message
+      message: 'PayPal payment failed: ' + error.message
     });
   }
 };
 
-// PayPal Payment Capture
+// Capture PayPal Payment
 exports.capturePayPalPayment = async (req, res) => {
   try {
     const { orderID } = req.body;
-
+    
     if (!orderID) {
       return res.status(400).json({
         success: false,
-        message: 'Order ID is required'
+        message: 'Missing order ID'
       });
     }
-
-    // Get PayPal access token
-    const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
     
-    const tokenResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`, 
+    // Get PayPal access token
+    const tokenResponse = await axios.post(
+      `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`,
       'grant_type=client_credentials',
       {
         headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64')}`
         }
       }
     );
-
+    
     const accessToken = tokenResponse.data.access_token;
-
+    
     // Capture payment
-    const captureResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v2/checkout/orders/${orderID}/capture`, {}, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
+    const captureResponse = await axios.post(
+      `${process.env.PAYPAL_BASE_URL}/v2/checkout/orders/${orderID}/capture`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        }
       }
-    });
-
+    );
+    
     res.json({
       success: true,
       data: captureResponse.data
     });
-
+    
   } catch (error) {
-    console.error('PayPal Capture Error:', error.response?.data || error.message);
+    console.error('PayPal Capture Error:', error);
     res.status(500).json({
       success: false,
-      message: 'PayPal payment capture failed',
-      error: error.response?.data || error.message
+      message: 'Capture failed: ' + error.message
     });
   }
 };

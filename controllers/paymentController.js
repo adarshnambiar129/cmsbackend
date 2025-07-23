@@ -247,10 +247,6 @@ exports.initiatePayPalPayment = async (req, res) => {
       });
     }
     
-    // Ensure frontend URL is available
-    const frontendURL = process.env.FRONTEND_URL || 'https://craftmystore.com';
-    console.log('Using frontend URL:', frontendURL);
-    
     // Get PayPal access token
     const tokenResponse = await axios.post(
       `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`,
@@ -276,8 +272,8 @@ exports.initiatePayPalPayment = async (req, res) => {
         description: `CraftMyStore - ${ecommPlan} + ${hostingPlan}`
       }],
       application_context: {
-        return_url: `${frontendURL}/payment-success?method=paypal&amount=${amount}&customer=${encodeURIComponent(customerName || customerEmail)}`,
-        cancel_url: `${frontendURL}/payment-cancel`,
+        return_url: `${process.env.FRONTEND_URL}/payment-success`,
+        cancel_url: `${process.env.FRONTEND_URL}/payment-cancel`,
         brand_name: 'CraftMyStore',
         landing_page: 'LOGIN',
         user_action: 'PAY_NOW'
@@ -301,10 +297,11 @@ exports.initiatePayPalPayment = async (req, res) => {
     const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
     console.log('PayPal approval URL:', approvalUrl);
     
+    // FIXED: Changed approvalUrl to redirectUrl to match frontend expectations
     res.json({
       success: true,
       orderId: orderResponse.data.id,
-      approvalUrl: approvalUrl
+      redirectUrl: approvalUrl
     });
     
   } catch (error) {
@@ -316,7 +313,7 @@ exports.initiatePayPalPayment = async (req, res) => {
   }
 };
 
-// Capture PayPal Payment
+// Capture PayPal Payment - No changes needed
 exports.capturePayPalPayment = async (req, res) => {
   try {
     const { orderID } = req.body;

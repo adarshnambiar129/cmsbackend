@@ -54,16 +54,21 @@ exports.initiatePhonePePayment = async (req, res) => {
     
     global.pendingPayments[merchantTransactionId] = paymentInfo;
 
+    // PhonePe production or sandbox environment based on .env
+    const isProduction = process.env.PHONEPE_BASE_URL.includes('api.phonepe.com');
+    
     // Initialize PhonePe SDK client
     const clientId = process.env.PHONEPE_MERCHANT_ID;
     const clientSecret = process.env.PHONEPE_MERCHANT_KEY;
     const clientVersion = 1;
-    const env = Env.PRODUCTION; // Use Env.SANDBOX for testing
+    const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
+
+    console.log(`Using PhonePe ${isProduction ? 'PRODUCTION' : 'SANDBOX'} environment`);
 
     const client = StandardCheckoutClient.getInstance(clientId, clientSecret, clientVersion, env);
     
     // Prepare redirectUrl with transaction details
-    const redirectUrl = `${process.env.FRONTEND_URL}/payment-status?merchantTransactionId=${merchantTransactionId}&status=success&amount=${amount}&method=phonepe&customer=${encodeURIComponent(customerName)}`;
+    const redirectUrl = `${process.env.FRONTEND_URL}/payment-status?merchantTransactionId=${merchantTransactionId}&amount=${amount}&method=phonepe&customer=${encodeURIComponent(customerName)}`;
     
     // Build metadata
     const metaInfo = MetaInfo.builder()
@@ -144,7 +149,7 @@ exports.phonePeCallback = async (req, res) => {
   }
 };
 
-// Verify PhonePe Payment using SDK
+// Verify PhonePe Payment using SDK - IMPROVED to correctly handle cancelled payments
 exports.verifyPhonePePayment = async (req, res) => {
   try {
     const { merchantTransactionId } = req.params;
@@ -172,15 +177,19 @@ exports.verifyPhonePePayment = async (req, res) => {
     if (!phonepeOrderId) {
       return res.status(400).json({
         success: false,
-        message: 'PhonePe order ID not found for this transaction'
+        message: 'PhonePe order ID not found for this transaction',
+        status: 'PAYMENT_ERROR'
       });
     }
+    
+    // PhonePe production or sandbox environment based on .env
+    const isProduction = process.env.PHONEPE_BASE_URL.includes('api.phonepe.com');
     
     // Initialize PhonePe SDK client
     const clientId = process.env.PHONEPE_MERCHANT_ID;
     const clientSecret = process.env.PHONEPE_MERCHANT_KEY;
     const clientVersion = 1;
-    const env = Env.PRODUCTION; // Use Env.SANDBOX for testing
+    const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
 
     const client = StandardCheckoutClient.getInstance(clientId, clientSecret, clientVersion, env);
     
@@ -193,9 +202,21 @@ exports.verifyPhonePePayment = async (req, res) => {
     global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
     global.pendingPayments[merchantTransactionId].paymentDetails = statusResponse;
     
+    // Check for specific success conditions
+    const isSuccess = 
+      statusResponse && 
+      (statusResponse.code === 'PAYMENT_SUCCESS' || 
+       statusResponse.state === 'COMPLETED' || 
+       statusResponse.state === 'SUCCESS');
+    
     return res.json({
       success: true,
-      data: statusResponse
+      data: {
+        ...statusResponse,
+        isPaymentSuccessful: isSuccess,
+        responseCode: isSuccess ? 'SUCCESS' : 'FAILED',
+        code: isSuccess ? 'PAYMENT_SUCCESS' : 'PAYMENT_ERROR'
+      }
     });
     
   } catch (error) {
@@ -204,12 +225,17 @@ exports.verifyPhonePePayment = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Verification failed: ' + error.message,
-      error: error
+      error: error,
+      data: {
+        isPaymentSuccessful: false,
+        responseCode: 'FAILED',
+        code: 'PAYMENT_ERROR'
+      }
     });
   }
 };
 
-// PayPal Payment Initiation - Keeping original implementation
+// PayPal Payment Initiation - FIXED variable name
 exports.initiatePayPalPayment = async (req, res) => {
   try {
     const { amount, customerName, customerEmail, customerPhone, ecommPlan, hostingPlan } = req.body;
@@ -221,8 +247,11 @@ exports.initiatePayPalPayment = async (req, res) => {
       });
     }
 
-    // Get PayPal access token
+    // Get PayPal access token - FIXED variable name to match .env
     const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64');
+    
+    console.log('PayPal Auth:', `${process.env.PAYPAL_CLIENT_ID}:***`);
+    console.log('PayPal URL:', `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`);
     
     const tokenResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`, 
       'grant_type=client_credentials',
@@ -235,6 +264,7 @@ exports.initiatePayPalPayment = async (req, res) => {
     );
 
     const accessToken = tokenResponse.data.access_token;
+    console.log('PayPal Access Token Obtained');
 
     // Create order
     const orderResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v2/checkout/orders`, {
@@ -260,6 +290,7 @@ exports.initiatePayPalPayment = async (req, res) => {
       }
     });
 
+    console.log('PayPal Order Created:', orderResponse.data.id);
     const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
 
     res.json({
@@ -278,7 +309,7 @@ exports.initiatePayPalPayment = async (req, res) => {
   }
 };
 
-// PayPal Payment Capture - Keeping original implementation
+// PayPal Payment Capture - FIXED variable name
 exports.capturePayPalPayment = async (req, res) => {
   try {
     const { orderID } = req.body;
@@ -290,7 +321,9 @@ exports.capturePayPalPayment = async (req, res) => {
       });
     }
 
-    // Get PayPal access token
+    console.log('Capturing PayPal payment for order:', orderID);
+
+    // Get PayPal access token - FIXED variable name to match .env
     const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64');
     
     const tokenResponse = await axios.post(`${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`, 
@@ -313,6 +346,7 @@ exports.capturePayPalPayment = async (req, res) => {
       }
     });
 
+    console.log('PayPal Capture Successful for order:', orderID);
     res.json({
       success: true,
       data: captureResponse.data

@@ -1,9 +1,12 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+// PhonePe Payment Initiation - Production Only
 exports.initiatePhonePePayment = async (req, res) => {
   try {
     const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
+    
+    console.log('PhonePe Payment Request:', req.body);
     
     // Validation
     if (!amount || !customerPhone || !customerEmail || !customerName) {
@@ -57,7 +60,7 @@ exports.initiatePhonePePayment = async (req, res) => {
       amount: Math.round(parseFloat(amount) * 100), // Convert to paise
       redirectUrl: `${process.env.FRONTEND_URL}/payment-status?merchantTransactionId=${merchantTransactionId}&status=success&amount=${amount}&method=phonepe&customer=${encodeURIComponent(customerName)}`,
       redirectMode: "REDIRECT",
-      callbackUrl: `${process.env.FRONTEND_URL}/api/payment/phonepe-callback`,
+      callbackUrl: `${process.env.BACKEND_URL}/api/payment/phonepe-callback`,
       mobileNumber: customerPhone,
       paymentInstrument: {
         type: "PAY_PAGE"
@@ -70,7 +73,7 @@ exports.initiatePhonePePayment = async (req, res) => {
     const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     console.log('Base64 Payload:', payloadBase64);
     
-    // Create checksum
+    // Create checksum using the correct base URL
     const apiEndpoint = "/pg/v1/pay";
     const checksumString = payloadBase64 + apiEndpoint + process.env.PHONEPE_MERCHANT_KEY;
     const sha256Hash = crypto.createHash('sha256').update(checksumString).digest('hex');
@@ -78,7 +81,7 @@ exports.initiatePhonePePayment = async (req, res) => {
     
     console.log('X-VERIFY Header:', xVerifyHeader);
     
-    // Make API call to PhonePe
+    // Make API call to PhonePe with correct base URL
     const apiUrl = `${process.env.PHONEPE_BASE_URL}/pg/v1/pay`;
     console.log('API URL:', apiUrl);
     

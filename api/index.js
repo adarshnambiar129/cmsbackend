@@ -11,10 +11,12 @@ const app = express();
 
 // CORS config
 app.use(cors({
-  origin: [process.env.FRONTEND_URL],
+  origin: process.env.FRONTEND_URL.split(',').map(url => url.trim()), // In case you have multiple origins
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-VERIFY', 'X-MERCHANT-ID']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-VERIFY', 'X-MERCHANT-ID'],
+  preflightContinue: false, // Ensures OPTIONS requests are handled properly
+  optionsSuccessStatus: 204 // Some legacy browsers (IE11, various SmartTVs) choke on 200
 }));
 
 // Middleware

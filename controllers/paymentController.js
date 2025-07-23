@@ -167,12 +167,7 @@ exports.verifyPhonePePayment = async (req, res) => {
     if (!global.pendingPayments || !global.pendingPayments[merchantTransactionId]) {
       return res.status(404).json({
         success: false,
-        message: 'Transaction not found',
-        data: {
-          isPaymentSuccessful: false,
-          responseCode: 'FAILED',
-          code: 'PAYMENT_ERROR'
-        }
+        message: 'Transaction not found'
       });
     }
 
@@ -182,12 +177,7 @@ exports.verifyPhonePePayment = async (req, res) => {
     if (!phonepeOrderId) {
       return res.status(400).json({
         success: false,
-        message: 'PhonePe order ID not found for this transaction',
-        data: {
-          isPaymentSuccessful: false,
-          responseCode: 'FAILED',
-          code: 'PAYMENT_ERROR'
-        }
+        message: 'PhonePe order ID not found for this transaction'
       });
     }
 
@@ -211,125 +201,39 @@ exports.verifyPhonePePayment = async (req, res) => {
     global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
     global.pendingPayments[merchantTransactionId].paymentDetails = statusResponse;
 
-    // MORE COMPREHENSIVE success determination
-    let isSuccess = false;
-    let responseCode = 'FAILED';
-    let paymentCode = 'PAYMENT_ERROR';
-
-    if (statusResponse) {
-      console.log('Analyzing PhonePe response:');
-      console.log('- code:', statusResponse.code);
-      console.log('- state:', statusResponse.state);
-      console.log('- responseCode:', statusResponse.responseCode);
-      console.log('- success:', statusResponse.success);
-      console.log('- status:', statusResponse.status);
-
-      // Check for ANY possible success indicator
-      const successIndicators = [
-        statusResponse.code === 'PAYMENT_SUCCESS',
-        statusResponse.state === 'COMPLETED',
-        statusResponse.state === 'SUCCESS',
-        statusResponse.responseCode === 'SUCCESS',
-        statusResponse.success === true,
-        statusResponse.status === 'SUCCESS',
-        statusResponse.status === 'COMPLETED',
-        // Add more possible success indicators
-        (statusResponse.data && statusResponse.data.responseCode === 'SUCCESS'),
-        (statusResponse.data && statusResponse.data.code === 'PAYMENT_SUCCESS'),
-        (statusResponse.data && statusResponse.data.state === 'COMPLETED')
-      ];
-
-      const failureIndicators = [
-        statusResponse.code === 'PAYMENT_ERROR',
-        statusResponse.code === 'PAYMENT_FAILED',
-        statusResponse.state === 'FAILED',
-        statusResponse.state === 'ERROR',
-        statusResponse.responseCode === 'FAILED',
-        statusResponse.success === false,
-        statusResponse.status === 'FAILED'
-      ];
-
-      const pendingIndicators = [
-        statusResponse.state === 'PENDING',
-        statusResponse.state === 'INITIATED',
-        statusResponse.state === 'PROCESSING',
-        statusResponse.code === 'PAYMENT_PENDING'
-      ];
-
-      if (successIndicators.some(indicator => indicator === true)) {
-        console.log('SUCCESS DETECTED - Payment verified as successful');
-        isSuccess = true;
-        responseCode = 'SUCCESS';
-        paymentCode = 'PAYMENT_SUCCESS';
-      } else if (pendingIndicators.some(indicator => indicator === true)) {
-        console.log('PENDING DETECTED - Payment is still processing');
-        return res.json({
-          success: true,
-          data: {
-            ...statusResponse,
-            isPaymentSuccessful: null,
-            responseCode: 'PENDING',
-            code: 'PAYMENT_PENDING',
-            message: 'Payment is still being processed'
-          }
-        });
-      } else if (failureIndicators.some(indicator => indicator === true)) {
-        console.log('FAILURE DETECTED - Payment verified as failed');
-        isSuccess = false;
-        responseCode = 'FAILED';
-        paymentCode = 'PAYMENT_ERROR';
-      } else {
-        // If no clear indicators, log the response and default based on presence of response
-        console.log('UNCLEAR STATUS - Response received but status unclear');
-        console.log('Full response:', JSON.stringify(statusResponse, null, 2));
-        
-        // If we got a response from PhonePe, assume success unless explicitly failed
-        isSuccess = true;
-        responseCode = 'SUCCESS';
-        paymentCode = 'PAYMENT_SUCCESS';
-        console.log('DEFAULTING TO SUCCESS due to unclear status');
-      }
+    // Determine the final status to send to the frontend
+    if (statusResponse && (statusResponse.code === 'PAYMENT_SUCCESS' || statusResponse.state === 'COMPLETED')) {
+      console.log('SUCCESS DETECTED - Payment verified as successful');
+      return res.json({
+        success: true,
+        status: 'SUCCESS',
+        message: 'Payment successful',
+        data: statusResponse
+      });
+    } else if (statusResponse && (statusResponse.state === 'PENDING' || statusResponse.state === 'INITIATED')) {
+      console.log('PENDING DETECTED - Payment is still processing');
+      return res.json({
+        success: false,
+        status: 'PENDING',
+        message: 'Payment is still processing',
+        data: statusResponse
+      });
     } else {
-      console.log('NO RESPONSE from PhonePe API');
-      isSuccess = false;
-      responseCode = 'FAILED';
-      paymentCode = 'PAYMENT_ERROR';
+      console.log('FAILURE DETECTED - Payment verified as failed');
+      return res.json({
+        success: false,
+        status: 'FAILED',
+        message: 'Payment failed or was cancelled',
+        data: statusResponse
+      });
     }
-
-    // Return final status
-    const finalResponse = {
-      success: true,
-      data: {
-        ...statusResponse,
-        isPaymentSuccessful: isSuccess,
-        responseCode: responseCode,
-        code: paymentCode,
-        merchantTransactionId: merchantTransactionId,
-        amount: paymentInfo.amount,
-        rawResponse: statusResponse // Include raw response for debugging
-      }
-    };
-
-    console.log('Final verification response:', JSON.stringify(finalResponse, null, 2));
-    return res.json(finalResponse);
 
   } catch (error) {
     console.error('PhonePe Verification Error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      response: error.response?.data
-    });
-
     return res.status(500).json({
       success: false,
-      message: 'Verification failed: ' + error.message,
-      data: {
-        isPaymentSuccessful: false,
-        responseCode: 'FAILED',
-        code: 'PAYMENT_ERROR',
-        error: error.message
-      }
+      status: 'FAILED',
+      message: 'Verification failed due to a server error: ' + error.message
     });
   }
 };

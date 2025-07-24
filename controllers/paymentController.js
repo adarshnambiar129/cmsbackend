@@ -61,8 +61,7 @@ exports.initiatePhonePePayment = async (req, res) => {
     const clientId = process.env.PHONEPE_MERCHANT_ID;
     const clientSecret = process.env.PHONEPE_MERCHANT_KEY;
     const clientVersion = 1;
-    // const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
-    const env = Env.SANDBOX;
+    const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
 
     console.log(`Using PhonePe ${isProduction ? 'PRODUCTION' : 'SANDBOX'} environment`);
 

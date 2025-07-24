@@ -61,7 +61,8 @@ exports.initiatePhonePePayment = async (req, res) => {
     const clientId = process.env.PHONEPE_MERCHANT_ID;
     const clientSecret = process.env.PHONEPE_MERCHANT_KEY;
     const clientVersion = 1;
-    const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
+    // const env = isProduction ? Env.PRODUCTION : Env.SANDBOX;
+    const env = Env.SANDBOX;
 
     console.log(`Using PhonePe ${isProduction ? 'PRODUCTION' : 'SANDBOX'} environment`);
 
@@ -172,14 +173,6 @@ exports.verifyPhonePePayment = async (req, res) => {
     }
 
     const paymentInfo = global.pendingPayments[merchantTransactionId];
-    const phonepeOrderId = paymentInfo.phonepeOrderId;
-
-    if (!phonepeOrderId) {
-      return res.status(400).json({
-        success: false,
-        message: 'PhonePe order ID not found for this transaction'
-      });
-    }
 
     // PhonePe production or sandbox environment based on .env
     const isProduction = process.env.PHONEPE_BASE_URL.includes('api.phonepe.com');
@@ -192,8 +185,10 @@ exports.verifyPhonePePayment = async (req, res) => {
 
     const client = StandardCheckoutClient.getInstance(clientId, clientSecret, clientVersion, env);
 
-    // Check payment status using the SDK
-    const statusResponse = await client.checkStatus(phonepeOrderId);
+    console.log('Checking payment status using merchantTransactionId:', merchantTransactionId);
+    
+    // Use getOrderStatus as per PhonePe documentation instead of checkStatus
+    const statusResponse = await client.getOrderStatus(merchantTransactionId);
     console.log('PhonePe Status Response:', JSON.stringify(statusResponse, null, 2));
 
     // Update payment status in memory
@@ -201,16 +196,26 @@ exports.verifyPhonePePayment = async (req, res) => {
     global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
     global.pendingPayments[merchantTransactionId].paymentDetails = statusResponse;
 
-    // Determine the final status to send to the frontend
-    if (statusResponse && (statusResponse.code === 'PAYMENT_SUCCESS' || statusResponse.state === 'COMPLETED')) {
+    // Determine the final status to send to the frontend based on PhonePe state
+    if (statusResponse && statusResponse.state === 'COMPLETED') {
       console.log('SUCCESS DETECTED - Payment verified as successful');
+      
+      // Also check payment details if available
+      const paymentDetail = statusResponse.paymentDetails && 
+                           statusResponse.paymentDetails.length > 0 ? 
+                           statusResponse.paymentDetails[0] : null;
+      
+      if (paymentDetail && paymentDetail.state !== 'COMPLETED') {
+        console.log('WARNING: Order state is COMPLETED but payment detail state is', paymentDetail.state);
+      }
+      
       return res.json({
         success: true,
         status: 'SUCCESS',
         message: 'Payment successful',
         data: statusResponse
       });
-    } else if (statusResponse && (statusResponse.state === 'PENDING' || statusResponse.state === 'INITIATED')) {
+    } else if (statusResponse && statusResponse.state === 'PENDING') {
       console.log('PENDING DETECTED - Payment is still processing');
       return res.json({
         success: false,
@@ -219,11 +224,21 @@ exports.verifyPhonePePayment = async (req, res) => {
         data: statusResponse
       });
     } else {
-      console.log('FAILURE DETECTED - Payment verified as failed');
+      console.log('FAILURE DETECTED - Payment verified as failed or cancelled');
+      
+      // Extract error information if available
+      const paymentDetail = statusResponse.paymentDetails && 
+                           statusResponse.paymentDetails.length > 0 ? 
+                           statusResponse.paymentDetails[0] : null;
+      
+      const errorInfo = paymentDetail ? 
+                        `Error: ${paymentDetail.errorCode || 'Unknown'} - ${paymentDetail.detailedErrorCode || ''}` : 
+                        'No detailed error information available';
+      
       return res.json({
         success: false,
         status: 'FAILED',
-        message: 'Payment failed or was cancelled',
+        message: `Payment failed or was cancelled. ${errorInfo}`,
         data: statusResponse
       });
     }

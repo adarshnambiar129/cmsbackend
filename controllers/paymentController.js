@@ -1,9 +1,85 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { StandardCheckoutClient, Env, MetaInfo, StandardCheckoutPayRequest } = require('pg-sdk-node');
+const nodemailer = require('nodemailer');
 
 // Store pending payments in memory (use database in production)
 global.pendingPayments = global.pendingPayments || {};
+
+// Configure nodemailer transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  secure: process.env.EMAIL_SECURE === 'true',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD
+  }
+});
+
+// Function to send notification email to admin
+const sendAdminNotificationEmail = async (paymentDetails) => {
+  try {
+    // Extract payment details
+    const { customerName, customerEmail, customerPhone, amount, ecommPlan, hostingPlan, merchantTransactionId } = paymentDetails;
+    
+    // Create email content
+    const subject = `New Client Alert: ${customerName} has made a payment!`;
+    
+    // Format the plans for better readability
+    const selectedPackage = [];
+    if (ecommPlan) selectedPackage.push(`E-commerce Plan: ${ecommPlan}`);
+    if (hostingPlan) selectedPackage.push(`Hosting Plan: ${hostingPlan}`);
+    
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #4a6ee0;">🎉 Great news! You have a new client!</h2>
+        <p>A customer has just completed a payment on CraftMyStore.</p>
+        
+        <h3 style="margin-top: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Client Details:</h3>
+        <ul style="list-style-type: none; padding-left: 0;">
+          <li><strong>Name:</strong> ${customerName}</li>
+          <li><strong>Email:</strong> ${customerEmail}</li>
+          <li><strong>Phone:</strong> ${customerPhone || 'Not provided'}</li>
+          <li><strong>Transaction ID:</strong> ${merchantTransactionId}</li>
+        </ul>
+        
+        <h3 style="margin-top: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Purchase Details:</h3>
+        <ul style="list-style-type: none; padding-left: 0;">
+          <li><strong>Amount Paid:</strong> $${amount}</li>
+          <li><strong>Selected Package:</strong> ${selectedPackage.join(', ') || 'Custom package'}</li>
+        </ul>
+        
+        <div style="margin-top: 30px; padding: 15px; background-color: #f7f7f7; border-radius: 5px;">
+          <p style="margin-top: 0;"><strong>Next Steps:</strong></p>
+          <ol>
+            <li>Reach out to the client within 24 hours to welcome them</li>
+            <li>Set up their account with the purchased packages</li>
+            <li>Schedule an onboarding call if needed</li>
+          </ol>
+        </div>
+        
+        <p style="margin-top: 30px; font-size: 12px; color: #777;">
+          This is an automated message from CraftMyStore platform. Please do not reply directly to this email.
+        </p>
+      </div>
+    `;
+    
+    // Send email
+    await transporter.sendMail({
+      from: `"CraftMyStore Notifications" <${process.env.EMAIL_FROM}>`,
+      to: process.env.ADMIN_EMAIL,
+      subject,
+      html
+    });
+    
+    console.log(`Admin notification email sent for customer: ${customerName}`);
+    return true;
+  } catch (error) {
+    console.error('Error sending admin notification email:', error);
+    return false;
+  }
+};
 
 // PhonePe Payment Initiation using SDK
 exports.initiatePhonePePayment = async (req, res) => {
@@ -208,6 +284,14 @@ exports.verifyPhonePePayment = async (req, res) => {
         console.log('WARNING: Order state is COMPLETED but payment detail state is', paymentDetail.state);
       }
       
+      // Send admin notification email
+      try {
+        await sendAdminNotificationEmail(paymentInfo);
+        console.log('Admin notification email sent successfully');
+      } catch (emailError) {
+        console.error('Failed to send admin notification email:', emailError);
+      }
+      
       return res.json({
         success: true,
         status: 'SUCCESS',
@@ -255,7 +339,7 @@ exports.verifyPhonePePayment = async (req, res) => {
 // PayPal Payment Initiation
 exports.initiatePayPalPayment = async (req, res) => {
   try {
-    const { amount, ecommPlan, hostingPlan, customerName, customerEmail } = req.body;
+    const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
     
     if (!amount || !customerEmail || !customerName) {
       return res.status(400).json({
@@ -314,6 +398,20 @@ exports.initiatePayPalPayment = async (req, res) => {
     const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
     console.log('PayPal approval URL:', approvalUrl);
     
+    // Store the order details for later verification and email
+    const merchantTransactionId = orderResponse.data.id;
+    global.pendingPayments[merchantTransactionId] = {
+      merchantTransactionId,
+      amount: parseFloat(amount),
+      customerName,
+      customerEmail,
+      customerPhone,
+      ecommPlan,
+      hostingPlan,
+      status: 'PENDING',
+      createdAt: new Date().toISOString()
+    };
+    
     // FIXED: Changed approvalUrl to redirectUrl to match frontend expectations
     res.json({
       success: true,
@@ -330,7 +428,7 @@ exports.initiatePayPalPayment = async (req, res) => {
   }
 };
 
-// Capture PayPal Payment - No changes needed
+// Capture PayPal Payment
 exports.capturePayPalPayment = async (req, res) => {
   try {
     const { orderID } = req.body;
@@ -371,6 +469,40 @@ exports.capturePayPalPayment = async (req, res) => {
     );
     
     console.log('PayPal payment captured successfully');
+    
+    // Get payment info from pendingPayments or create from PayPal response
+    let paymentInfo = global.pendingPayments[orderID];
+    
+    // If not found in memory, create from PayPal response
+    if (!paymentInfo) {
+      const captureData = captureResponse.data;
+      paymentInfo = {
+        merchantTransactionId: orderID,
+        customerName: captureData.payer?.name?.given_name + ' ' + captureData.payer?.name?.surname || 'PayPal Customer',
+        customerEmail: captureData.payer?.email_address || 'No email provided',
+        customerPhone: 'Not provided via PayPal',
+        amount: captureData.purchase_units[0]?.payments?.captures[0]?.amount?.value || '0',
+        ecommPlan: captureData.purchase_units[0]?.description?.includes('CraftMyStore') ? 
+          captureData.purchase_units[0]?.description.split('-')[1]?.trim() : 'Standard',
+        hostingPlan: 'Standard'
+      };
+    }
+    
+    // Update payment status
+    if (paymentInfo) {
+      paymentInfo.status = 'COMPLETED';
+      paymentInfo.paypalCaptureData = captureResponse.data;
+      paymentInfo.updatedAt = new Date().toISOString();
+      global.pendingPayments[orderID] = paymentInfo;
+    }
+    
+    // Send admin notification email
+    try {
+      await sendAdminNotificationEmail(paymentInfo);
+      console.log('Admin notification email sent successfully for PayPal payment');
+    } catch (emailError) {
+      console.error('Failed to send admin notification email for PayPal payment:', emailError);
+    }
     
     res.json({
       success: true,

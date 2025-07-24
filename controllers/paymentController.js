@@ -2,8 +2,60 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { StandardCheckoutClient, Env, MetaInfo, StandardCheckoutPayRequest } = require('pg-sdk-node');
 const nodemailer = require('nodemailer');
+const admin = require('firebase-admin');
 
-// Store pending payments in memory (use database in production)
+// Initialize Firebase Admin SDK
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
+  });
+  console.log('Firebase Admin SDK initialized successfully');
+}
+
+// Get Firestore instance
+const db = admin.firestore();
+
+// Function to store payment data in Firestore
+const storePaymentData = async (paymentData) => {
+  try {
+    const timestamp = new Date();
+    
+    const paymentDoc = {
+      customerInfo: {
+        name: paymentData.customerName || '',
+        email: paymentData.customerEmail || '',
+        phone: paymentData.customerPhone || ''
+      },
+      transactionInfo: {
+        id: paymentData.merchantTransactionId || '',
+        amount: paymentData.amount || 0,
+        status: paymentData.status || 'UNKNOWN',
+        paymentMethod: paymentData.paymentMethod || 'unknown',
+        createdAt: paymentData.createdAt || timestamp.toISOString(),
+        updatedAt: paymentData.updatedAt || timestamp.toISOString(),
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      },
+      planDetails: {
+        ecommPlan: paymentData.ecommPlan || '',
+        hostingPlan: paymentData.hostingPlan || ''
+      }
+    };
+
+    // Add transaction ID as document ID
+    await db.collection('payments').doc(paymentData.merchantTransactionId).set(paymentDoc);
+    console.log('Payment data stored in Firestore with ID:', paymentData.merchantTransactionId);
+    return paymentData.merchantTransactionId;
+  } catch (error) {
+    console.error('Error storing payment data in Firestore:', error);
+    return null;
+  }
+};
+
+// Store pending payments in memory
 global.pendingPayments = global.pendingPayments || {};
 
 // Configure nodemailer transporter
@@ -292,6 +344,22 @@ exports.verifyPhonePePayment = async (req, res) => {
         console.error('Failed to send admin notification email:', emailError);
       }
       
+      // Store payment data in Firestore
+      try {
+        const firestorePaymentData = {
+          ...paymentInfo,
+          paymentMethod: 'phonepe',
+          status: 'COMPLETED',
+          updatedAt: new Date().toISOString()
+        };
+        
+        await storePaymentData(firestorePaymentData);
+        console.log('PhonePe payment data stored in Firestore successfully');
+      } catch (firestoreError) {
+        console.error('Failed to store PhonePe payment data in Firestore:', firestoreError);
+        // Don't affect the payment response if Firestore storage fails
+      }
+      
       return res.json({
         success: true,
         status: 'SUCCESS',
@@ -502,6 +570,22 @@ exports.capturePayPalPayment = async (req, res) => {
       console.log('Admin notification email sent successfully for PayPal payment');
     } catch (emailError) {
       console.error('Failed to send admin notification email for PayPal payment:', emailError);
+    }
+    
+    // Store payment data in Firestore
+    try {
+      const firestorePaymentData = {
+        ...paymentInfo,
+        paymentMethod: 'paypal',
+        status: 'COMPLETED',
+        updatedAt: new Date().toISOString()
+      };
+      
+      await storePaymentData(firestorePaymentData);
+      console.log('PayPal payment data stored in Firestore successfully');
+    } catch (firestoreError) {
+      console.error('Failed to store PayPal payment data in Firestore:', firestoreError);
+      // Don't affect the payment response if Firestore storage fails
     }
     
     res.json({
